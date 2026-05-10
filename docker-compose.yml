@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  k8s-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: k8s-lab
+    privileged: true
+    volumes:
+      # Mount host Docker socket — kind creates sibling containers on the host
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persist kubeconfig so kubectl works from host too
+      - kube-config:/root/.kube
+      # Drop YAML manifests here on your Mac, access at /workspace/manifests inside
+      - ./manifests:/workspace/manifests
+    environment:
+      - KUBECONFIG=/root/.kube/config
+    ports:
+      # Kubernetes API server
+      - "6443:6443"
+    # Keep stdout/stderr streaming so 'docker compose logs -f' works
+    tty: false
+    stdin_open: false
+    restart: unless-stopped
+
+volumes:
+  kube-config:
+    name: k8s-kube-config

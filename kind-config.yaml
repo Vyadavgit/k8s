@@ -1,0 +1,28 @@
+# kind cluster configuration
+# https://kind.sigs.k8s.io/docs/user/configuration/
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  # Control plane node
+  - role: control-plane
+    kubeadmConfigPatches:
+      # Allow scheduling on control-plane for single-node learning setup
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+
+  # Worker nodes - add more to study multi-node networking
+  - role: worker
+  - role: worker
+
+networking:
+  # Pod subnet - useful for understanding overlay networking
+  podSubnet: "10.244.0.0/16"
+  # Service subnet
+  serviceSubnet: "10.96.0.0/12"
+  # Disable default CNI so you can install your own (Flannel, Calico, etc.)
+  # Set to true if you want to install a custom CNI for learning
+  disableDefaultCNI: false
