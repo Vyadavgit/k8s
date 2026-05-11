@@ -1,42 +1,144 @@
-.PHONY: build up down shell k logs clean rebuild
+.PHONY: build rebuild up down clean shell k logs deploy forward forward-stop
 
-## Build the Docker image
+# ──────────────────────────────────────────────
+# Image
+# ──────────────────────────────────────────────
+
+## Build the Docker image (cached)
 build:
 	docker compose build
 
-## Build from scratch (no cache)
+## Force a clean rebuild with no cache
 rebuild:
 	docker compose build --no-cache
 
-## Start the cluster (detached)
+# ──────────────────────────────────────────────
+# Cluster lifecycle
+# ──────────────────────────────────────────────
+
+## Start cluster + deploy all manifests + start port-forwards
 up:
-	@echo "==> Cleaning up any prior kind containers..."
+	@echo ""
+	@echo "==> [1/5] Cleaning up any prior kind containers..."
 	@docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null || true
 	@docker network rm kind 2>/dev/null || true
-	@echo "==> Starting cluster..."
-	docker compose up -d
-	@echo "==> Waiting for cluster to be ready (tailing logs)..."
-	docker logs -f k8s-lab
+	@echo ""
+	@echo "==> [2/5] Starting k8s-lab container..."
+	@docker compose up -d
+	@echo ""
+	@echo "==> [3/5] Waiting for cluster to be ready..."
+	@until docker exec k8s-lab kubectl get nodes 2>/dev/null | grep -q "Ready"; do \
+		echo "    ... waiting for nodes"; sleep 5; \
+	done
+	@echo "    ✓ Nodes ready"
+	@until docker exec k8s-lab kubectl get po -n kube-system 2>/dev/null | grep coredns | grep -q "Running"; do \
+		echo "    ... waiting for CoreDNS"; sleep 5; \
+	done
+	@echo "    ✓ CoreDNS ready"
+	@echo ""
+	@echo "==> [4/5] Deploying all manifests..."
+	@docker exec k8s-lab kubectl apply -f /workspace/manifests/
+	@docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+	@echo "==> Waiting for rollouts..."
+	@docker exec k8s-lab kubectl rollout status deployment/hello-api --timeout=90s 2>/dev/null || true
+	@docker exec k8s-lab kubectl rollout status deployment/nginx --timeout=90s 2>/dev/null || true
+	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard -n kubernetes-dashboard --timeout=120s 2>/dev/null || true
+	@echo "==> Enabling skip-login on dashboard..."
+	@docker exec k8s-lab kubectl patch deployment kubernetes-dashboard -n kubernetes-dashboard \
+		--type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-skip-login"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-settings-authorizer"}]' 2>/dev/null || true
+	@echo ""
+	@echo "==> [5/5] Starting port-forwards..."
+	@$(MAKE) --no-print-directory forward
+	@echo ""
+	@echo "  ✓ Cluster is up and running!"
+	@echo "  ✓ hello-api  → http://localhost:30081"
+	@echo "  ✓ nginx      → http://localhost:30080"
+	@echo "  ✓ dashboard  → https://localhost:8443  (click 'Skip' to bypass login)"
+	@echo ""
+	@echo "  Dashboard token (static, no expiry):"
+	@docker exec k8s-lab kubectl get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
+	@echo ""
+
+## Stop port-forwards, remove all containers and networks (full shutdown)
+down:
+	@echo ""
+	@echo "==> Stopping port-forwards..."
+	@pkill -f "kubectl port-forward" 2>/dev/null || true
+	@echo "==> Removing containers..."
+	@docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null || true
+	@echo "==> Removing kind network..."
+	@docker network rm kind 2>/dev/null || true
+	@echo "==> Stopping compose..."
+	@docker compose down --remove-orphans 2>/dev/null || true
+	@echo ""
+	@echo "  ✓ Cluster stopped and cleaned up."
+
+## Full reset: down + delete kubeconfig volume
+clean: down
+	@docker volume rm k8s-kube-config 2>/dev/null || true
+	@echo "  ✓ Volume removed. Run 'make build && make up' for a fresh start."
+
+# ──────────────────────────────────────────────
+# Day-to-day operations
+# ──────────────────────────────────────────────
 
 ## Attach an interactive shell to the lab container
 shell:
 	docker exec -it k8s-lab bash
 
-## Run a single kubectl command from your Mac
+## Run a kubectl command from your Mac
 ## Usage: make k CMD="get nodes -o wide"
 k:
-	docker exec k8s-lab kubectl $(CMD)
+	@test -n "$(CMD)" || (echo "Usage: make k CMD=\"get nodes -o wide\"" && exit 1)
+	@docker exec k8s-lab kubectl $(CMD)
 
-## Tail container logs
+## Tail the k8s-lab container logs
 logs:
 	docker logs -f k8s-lab
 
-## Stop and remove all containers and kind network
-down:
-	docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null || true
-	docker network rm kind 2>/dev/null || true
-	docker compose down --remove-orphans 2>/dev/null || true
+## Re-apply all manifests + dashboard (cluster must already be running)
+deploy:
+	@echo "==> Applying manifests..."
+	@docker exec k8s-lab kubectl apply -f /workspace/manifests/
+	@docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+	@echo "==> Waiting for rollouts..."
+	@docker exec k8s-lab kubectl rollout status deployment/hello-api --timeout=90s 2>/dev/null || true
+	@docker exec k8s-lab kubectl rollout status deployment/nginx --timeout=90s 2>/dev/null || true
+	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard -n kubernetes-dashboard --timeout=120s 2>/dev/null || true
+	@echo "==> Enabling skip-login on dashboard..."
+	@docker exec k8s-lab kubectl patch deployment kubernetes-dashboard -n kubernetes-dashboard \
+		--type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-skip-login"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-settings-authorizer"}]' 2>/dev/null || true
+	@echo ""
+	@docker exec k8s-lab kubectl get svc
+	@echo ""
+	@echo "  hello-api  → http://localhost:30081"
+	@echo "  nginx      → http://localhost:30080"
+	@echo "  dashboard  → https://localhost:8443  (click 'Skip' to bypass login)"
+	@echo ""
+	@echo "  Dashboard token (static, no expiry):"
+	@docker exec k8s-lab kubectl get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
+	@echo ""
 
-## Full clean: also removes the kubeconfig volume
-clean: down
-	docker volume rm k8s-kube-config 2>/dev/null || true
+# ──────────────────────────────────────────────
+# Port-forwarding
+# ──────────────────────────────────────────────
+
+## Start all port-forwards in background (Mac processes, accessible at localhost)
+forward:
+	@echo "==> Killing any existing port-forwards..."
+	@pkill -f "kubectl port-forward" 2>/dev/null || true
+	@sleep 1
+	@echo "==> Starting port-forwards..."
+	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
+	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
+	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
+	@sleep 2
+	@echo ""
+	@echo "  ✓ hello-api  → http://localhost:30081"
+	@echo "  ✓ nginx      → http://localhost:30080"
+	@echo "  ✓ dashboard  → https://localhost:8443"
+
+## Stop all port-forwards
+forward-stop:
+	@pkill -f "kubectl port-forward" 2>/dev/null || true
+	@echo "  ✓ All port-forwards stopped."
