@@ -1,4 +1,4 @@
-.PHONY: build rebuild up down clean shell k logs deploy forward forward-stop
+.PHONY: build rebuild up down clean shell k logs deploy forward forward-stop dashboard
 
 # ──────────────────────────────────────────────
 # Image
@@ -36,27 +36,20 @@ up:
 	done
 	@echo "    ✓ CoreDNS ready"
 	@echo ""
-	@echo "==> [4/5] Deploying all manifests..."
+	@echo "==> [4/5] Deploying workload manifests..."
 	@docker exec k8s-lab kubectl apply -f /workspace/manifests/
-	@docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
 	@echo "==> Waiting for rollouts..."
 	@docker exec k8s-lab kubectl rollout status deployment/hello-api --timeout=90s 2>/dev/null || true
 	@docker exec k8s-lab kubectl rollout status deployment/nginx --timeout=90s 2>/dev/null || true
-	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard -n kubernetes-dashboard --timeout=120s 2>/dev/null || true
-	@echo "==> Enabling skip-login on dashboard..."
-	@docker exec k8s-lab kubectl patch deployment kubernetes-dashboard -n kubernetes-dashboard \
-		--type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-skip-login"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-settings-authorizer"}]' 2>/dev/null || true
 	@echo ""
-	@echo "==> [5/5] Starting port-forwards..."
+	@echo "==> [5/5] Starting port-forwards for workloads..."
 	@$(MAKE) --no-print-directory forward
 	@echo ""
 	@echo "  ✓ Cluster is up and running!"
 	@echo "  ✓ hello-api  → http://localhost:30081"
 	@echo "  ✓ nginx      → http://localhost:30080"
-	@echo "  ✓ dashboard  → https://localhost:8443  (click 'Skip' to bypass login)"
 	@echo ""
-	@echo "  Dashboard token (static, no expiry):"
-	@docker exec k8s-lab kubectl get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
+	@echo "  Run 'make dashboard' to install and open the Kubernetes Dashboard."
 	@echo ""
 
 ## Stop port-forwards, remove all containers and networks (full shutdown)
@@ -96,34 +89,26 @@ k:
 logs:
 	docker logs -f k8s-lab
 
-## Re-apply all manifests + dashboard (cluster must already be running)
+## Re-apply workload manifests (cluster must already be running)
 deploy:
 	@echo "==> Applying manifests..."
 	@docker exec k8s-lab kubectl apply -f /workspace/manifests/
-	@docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
 	@echo "==> Waiting for rollouts..."
 	@docker exec k8s-lab kubectl rollout status deployment/hello-api --timeout=90s 2>/dev/null || true
 	@docker exec k8s-lab kubectl rollout status deployment/nginx --timeout=90s 2>/dev/null || true
-	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard -n kubernetes-dashboard --timeout=120s 2>/dev/null || true
-	@echo "==> Enabling skip-login on dashboard..."
-	@docker exec k8s-lab kubectl patch deployment kubernetes-dashboard -n kubernetes-dashboard \
-		--type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-skip-login"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-settings-authorizer"}]' 2>/dev/null || true
 	@echo ""
 	@docker exec k8s-lab kubectl get svc
 	@echo ""
 	@echo "  hello-api  → http://localhost:30081"
 	@echo "  nginx      → http://localhost:30080"
-	@echo "  dashboard  → https://localhost:8443  (click 'Skip' to bypass login)"
 	@echo ""
-	@echo "  Dashboard token (static, no expiry):"
-	@docker exec k8s-lab kubectl get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
-	@echo ""
+	@echo "  Run 'make dashboard' to install/refresh the Kubernetes Dashboard."
 
 # ──────────────────────────────────────────────
 # Port-forwarding
 # ──────────────────────────────────────────────
 
-## Start all port-forwards in background (Mac processes, accessible at localhost)
+## Start workload port-forwards in background (Mac processes, accessible at localhost)
 forward:
 	@echo "==> Killing any existing port-forwards..."
 	@pkill -f "kubectl port-forward" 2>/dev/null || true
@@ -131,14 +116,64 @@ forward:
 	@echo "==> Starting port-forwards..."
 	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
 	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
-	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
 	@sleep 2
 	@echo ""
 	@echo "  ✓ hello-api  → http://localhost:30081"
 	@echo "  ✓ nginx      → http://localhost:30080"
-	@echo "  ✓ dashboard  → https://localhost:8443"
+	@echo "  Run 'make dashboard' to install and open the Kubernetes Dashboard."
 
 ## Stop all port-forwards
 forward-stop:
 	@pkill -f "kubectl port-forward" 2>/dev/null || true
 	@echo "  ✓ All port-forwards stopped."
+
+# ──────────────────────────────────────────────
+# Dashboard  (run after 'make up' when cluster is fully ready)
+# ──────────────────────────────────────────────
+
+## Install the Kubernetes Dashboard, wait until ready, enable skip-login, start port-forward
+dashboard:
+	@echo ""
+	@echo "==> Installing Kubernetes Dashboard..."
+	@docker exec k8s-lab kubectl apply -f /workspace/manifests/dashboard-admin.yaml
+	@docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+	@echo ""
+	@echo "==> Waiting for dashboard pod to be Running (may take ~60s on first install)..."
+	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard \
+		-n kubernetes-dashboard --timeout=180s
+	@until docker exec k8s-lab kubectl get pod -n kubernetes-dashboard \
+		-l k8s-app=kubernetes-dashboard 2>/dev/null | grep -q "Running"; do \
+		echo "    ... waiting for dashboard pod"; sleep 5; \
+	done
+	@echo "    ✓ Dashboard pod Running"
+	@echo ""
+	@echo "==> Enabling skip-login..."
+	@docker exec k8s-lab kubectl patch deployment kubernetes-dashboard \
+		-n kubernetes-dashboard \
+		--type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-skip-login"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--disable-settings-authorizer"}]' \
+		2>/dev/null || true
+	@echo "==> Waiting for patched pod to be Ready..."
+	@sleep 5
+	@docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard \
+		-n kubernetes-dashboard --timeout=90s
+	@echo "    ✓ Dashboard ready"
+	@echo ""
+	@echo "==> Starting dashboard port-forward..."
+	@pkill -f "kubectl port-forward.*8443" 2>/dev/null || true
+	@sleep 1
+	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 \
+		-n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
+	@sleep 3
+	@echo ""
+	@echo "  ✓ dashboard → https://localhost:8443"
+	@echo "  Click 'Skip' on the login page, or paste the token below:"
+	@echo ""
+	@echo "  Static token (no expiry):"
+	@docker exec k8s-lab kubectl get secret admin-user-token \
+		-n kubernetes-dashboard -o jsonpath='{.data.token}' | base64 -d
+	@echo ""
+	@echo ""
+	@echo "  TIP: Dashboard opens on the 'default' namespace."
+	@echo "       Change the namespace dropdown (top-left) to 'All namespaces'"
+	@echo "       to see hello-api and nginx workloads."
+	@echo ""

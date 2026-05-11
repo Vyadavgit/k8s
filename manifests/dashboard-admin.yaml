@@ -26,6 +26,21 @@ subjects:
     name: admin-user
     namespace: kubernetes-dashboard
 ---
+# Give the dashboard's own service account cluster-admin so skip-login works
+# (the dashboard runs as kubernetes-dashboard SA, not admin-user)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubernetes-dashboard-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: kubernetes-dashboard
+    namespace: kubernetes-dashboard
+---
 # Long-lived static token Secret (never expires — local lab only)
 apiVersion: v1
 kind: Secret

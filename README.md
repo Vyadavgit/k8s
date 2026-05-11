@@ -48,19 +48,25 @@ k8s/
 
 ## Quick Start
 
-### Full workflow (2 commands)
+### Full workflow (3 commands)
 
 ```bash
-make build    # 1. Build the Docker image (once)
-make up       # 2. Start cluster + deploy everything + start port-forwards
+make build      # 1. Build the Docker image (once)
+make up         # 2. Start cluster + deploy workloads + start port-forwards
+make dashboard  # 3. Install dashboard once cluster is fully ready
 ```
 
 `make up` automatically:
 - Bootstraps the 3-node kind cluster
-- Deploys nginx, Hello API, and Kubernetes Dashboard
-- Patches dashboard for skip-login (no token required)
+- Deploys nginx and Hello API
 - Starts port-forwards as background Mac processes
-- Prints a static dashboard token at the end
+
+`make dashboard` (run separately after `make up` completes):
+- Installs Kubernetes Dashboard v2.7.0
+- Waits until the dashboard pod is truly Running
+- Patches for skip-login (no token required)
+- Starts the dashboard port-forward
+- Prints a static admin token
 
 Everything is live when complete:
 
@@ -69,6 +75,8 @@ Everything is live when complete:
 | Hello API | http://localhost:30081 | Returns `Hello from Kubernetes! 🚀` |
 | nginx | http://localhost:30080 | nginx welcome page |
 | Dashboard | https://localhost:8443 | Click **Skip** to bypass login |
+
+> **Tip:** The dashboard opens on the `default` namespace. Change the namespace dropdown (top-left) to **All namespaces** to see all workloads.
 
 Shut down and clean up everything:
 
@@ -84,13 +92,14 @@ make down
 |---|---|
 | `make build` | Build the Docker image |
 | `make rebuild` | Force rebuild with no cache |
-| `make up` | Start cluster + deploy manifests + start port-forwards |
+| `make up` | Start cluster + deploy workload manifests + start port-forwards |
+| `make dashboard` | Install dashboard, wait until ready, enable skip-login, start port-forward |
 | `make down` | Stop port-forwards + remove all containers + clean up |
 | `make clean` | `down` + delete kubeconfig volume (full reset) |
 | `make shell` | Attach interactive bash shell to the container |
-| `make forward` | (Re)start all port-forwards in background |
+| `make forward` | (Re)start workload port-forwards (hello-api + nginx) in background |
 | `make forward-stop` | Stop all port-forwards |
-| `make deploy` | Re-apply all manifests (cluster must be running) |
+| `make deploy` | Re-apply workload manifests (cluster must be running) |
 | `make logs` | Tail container logs |
 | `make k CMD="..."` | Run any kubectl command from your Mac |
 
@@ -132,21 +141,44 @@ This single command (fully automatic, no Ctrl+C needed):
 2. Starts the `k8s-lab` container via `docker compose up -d`
 3. Bootstraps a 3-node kind cluster (1 control-plane + 2 workers)
 4. Polls until all nodes are `Ready` and CoreDNS is running
-5. Applies all manifests in `manifests/` + installs Kubernetes Dashboard v2.7.0
-6. Waits for all deployments to roll out
-7. Patches dashboard to enable skip-login
-8. Starts port-forwards as background Mac processes
-9. Prints the static dashboard token
+5. Applies workload manifests (`hello-api`, `nginx`) and waits for rollouts
+6. Starts port-forwards as background Mac processes
 
 Expected final output:
 ```
   ✓ Cluster is up and running!
   ✓ hello-api  → http://localhost:30081
   ✓ nginx      → http://localhost:30080
-  ✓ dashboard  → https://localhost:8443  (click 'Skip' to bypass login)
 
-  Dashboard token (static, no expiry):
+  Run 'make dashboard' to install and open the Kubernetes Dashboard.
+```
+
+### Step 2b — Install the Dashboard (optional, run after `make up`)
+
+```bash
+make dashboard
+```
+
+This installs the dashboard and waits until it is truly ready before starting the port-forward:
+1. Applies `dashboard-admin.yaml` + official Dashboard v2.7.0 manifest
+2. Waits for `rollout status` (up to 3 min)
+3. Polls until the pod status shows `Running`
+4. Patches `--enable-skip-login` + `--disable-settings-authorizer`
+5. Waits for the patched rollout to settle
+6. Starts the dashboard port-forward on `:8443`
+7. Prints the static token
+
+Expected final output:
+```
+  ✓ dashboard → https://localhost:8443
+  Click 'Skip' on the login page, or paste the token below:
+
+  Static token (no expiry):
   eyJhbGci...
+
+  TIP: Dashboard opens on the 'default' namespace.
+       Change the namespace dropdown (top-left) to 'All namespaces'
+       to see hello-api and nginx workloads.
 ```
 
 ---
@@ -209,17 +241,25 @@ docker compose up -d
 docker logs -f k8s-lab   # watch bootstrap, Ctrl+C when done
 ```
 
-**Deploy:**
+**Deploy workloads:**
 ```bash
 docker exec k8s-lab kubectl apply -f /workspace/manifests/
-docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
 ```
 
-**Port-forwards (background Mac processes):**
+**Workload port-forwards (background Mac processes):**
 ```bash
 docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
 docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
-docker exec k8s-lab kubectl port-forward --address 0.0.0.0 -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
+```
+
+**Dashboard (after workloads are running):**
+```bash
+docker exec k8s-lab kubectl apply -f /workspace/manifests/dashboard-admin.yaml
+docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
+docker exec k8s-lab kubectl rollout status deployment/kubernetes-dashboard -n kubernetes-dashboard --timeout=180s
+# patch skip-login, then:
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 \
+  -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
 ```
 
 **Shell:**
@@ -339,15 +379,23 @@ A full web UI for your cluster — Kubernetes Dashboard v2.7.0.
 ![Kubernetes Dashboard](assets/dashboard.png)
 *Workload status showing Deployments, Pods, and Replica Sets all running.*
 
-> **`make up` handles everything automatically** — installs the dashboard, patches it for skip-login, starts the port-forward, and prints the static token.
+> Run `make dashboard` **after** `make up` to install and open the dashboard. It waits until the pod is fully Running before starting the port-forward, avoiding the connection-refused race condition.
+
+### Install / open
+
+```bash
+make dashboard
+```
 
 ### Access
 
 Open **https://localhost:8443** in your browser.
 
 - Accept the self-signed certificate warning (**Advanced → Proceed**)
-- Click **Skip** to enter without a token (read-only safe)
-- Or paste the static token (printed by `make up` / `make deploy`) for full admin access
+- Click **Skip** to enter without a token
+- Or paste the static token printed by `make dashboard` for full admin access
+
+> **Tip:** The dashboard defaults to the `default` namespace. Use the namespace dropdown (top-left) and select **All namespaces** to see hello-api, nginx, and all system workloads.
 
 ### Get the static token any time
 
@@ -355,10 +403,14 @@ Open **https://localhost:8443** in your browser.
 make k CMD="get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}'" | base64 -d && echo
 ```
 
-### Restart the port-forward if dashboard becomes unreachable
+### Restart the dashboard port-forward
 
 ```bash
-make forward
+make dashboard   # full reinstall + port-forward (idempotent)
+# or just restart the port-forward:
+pkill -f "kubectl port-forward.*8443" 2>/dev/null; \
+  docker exec k8s-lab kubectl port-forward --address 0.0.0.0 \
+  -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
 ```
 
 ### Teardown dashboard only
@@ -476,13 +528,22 @@ make forward
 
 **Dashboard not accessible**
 ```bash
-make forward   # restart all port-forwards
-# then open https://localhost:8443 and click Skip
+make dashboard   # reinstall + wait for pod + restart port-forward (safe to re-run)
 ```
-If the dashboard was just deployed, wait 30s for the pod to be fully Running:
+Or just restart the port-forward if the pod is already running:
+```bash
+pkill -f "kubectl port-forward.*8443" 2>/dev/null
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 \
+  -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
+```
+Watch the pod status:
 ```bash
 make k CMD="get pods -n kubernetes-dashboard -w"
 ```
+
+**Dashboard shows no workloads**
+
+The dashboard defaults to the `default` namespace. hello-api and nginx are in `default`, but the dashboard itself is in `kubernetes-dashboard`. Use the namespace dropdown (top-left) and select **All namespaces** to see everything.
 
 **`kubectl` connection refused inside container**
 ```bash
