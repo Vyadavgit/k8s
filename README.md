@@ -33,299 +33,338 @@ A containerized Kubernetes environment running a 3-node cluster (1 control-plane
 
 ```
 k8s/
-├── Dockerfile          # Ubuntu image with kubectl, kind, and network tools
-├── docker-compose.yml  # Compose service definition
+├── Dockerfile          # Ubuntu image with kubectl, kind, helm, and network tools
+├── docker-compose.yml  # Compose service definition and port mappings
 ├── entrypoint.sh       # Bootstraps the kind cluster on container start
-├── kind-config.yaml    # kind cluster configuration (nodes, networking, CNI)
-├── manifests/          # Drop your YAML manifests here — mounted at /workspace/manifests
+├── kind-config.yaml    # kind cluster topology (nodes, subnets, port mappings)
+├── Makefile            # All lifecycle commands
+├── assets/             # Screenshots and images for docs
+├── manifests/          # YAML manifests — live-mounted at /workspace/manifests
+│   ├── hello-api.yaml          # Hello World API (NodePort 30081)
+│   ├── ngnix.yaml              # nginx web server (NodePort 30080)
+│   └── dashboard-admin.yaml    # Dashboard admin ServiceAccount + token
 └── README.md
 ```
 
 ## Quick Start
 
-### Option A — Makefile (recommended)
+### Full workflow (2 commands)
 
 ```bash
-make build      # build the image
-make up         # start cluster + tail logs until ready
-make shell      # attach interactive shell
-make down       # stop everything
-make clean      # stop + delete kubeconfig volume
+make build    # 1. Build the Docker image (once)
+make up       # 2. Start cluster + deploy everything + start port-forwards
 ```
 
-Run a one-off kubectl command from your Mac without shelling in:
+`make up` automatically:
+- Bootstraps the 3-node kind cluster
+- Deploys nginx, Hello API, and Kubernetes Dashboard
+- Patches dashboard for skip-login (no token required)
+- Starts port-forwards as background Mac processes
+- Prints a static dashboard token at the end
+
+Everything is live when complete:
+
+| Service | URL | Notes |
+|---|---|---|
+| Hello API | http://localhost:30081 | Returns `Hello from Kubernetes! 🚀` |
+| nginx | http://localhost:30080 | nginx welcome page |
+| Dashboard | https://localhost:8443 | Click **Skip** to bypass login |
+
+Shut down and clean up everything:
+
 ```bash
-make k CMD="get nodes -o wide"
-make k CMD="get po -A"
-make k CMD="apply -f /workspace/manifests/example.yaml"
+make down
 ```
 
 ---
 
-### Option B — docker compose
+## All Make Targets
 
-#### 1. Build the image
+| Command | Description |
+|---|---|
+| `make build` | Build the Docker image |
+| `make rebuild` | Force rebuild with no cache |
+| `make up` | Start cluster + deploy manifests + start port-forwards |
+| `make down` | Stop port-forwards + remove all containers + clean up |
+| `make clean` | `down` + delete kubeconfig volume (full reset) |
+| `make shell` | Attach interactive bash shell to the container |
+| `make forward` | (Re)start all port-forwards in background |
+| `make forward-stop` | Stop all port-forwards |
+| `make deploy` | Re-apply all manifests (cluster must be running) |
+| `make logs` | Tail container logs |
+| `make k CMD="..."` | Run any kubectl command from your Mac |
 
+```bash
+# kubectl one-liners from your Mac
+make k CMD="get nodes -o wide"
+make k CMD="get po -A"
+make k CMD="get svc"
+make k CMD="scale deployment hello-api --replicas=4"
+make k CMD="logs -l app=hello-api -f"
+```
+
+---
+
+## Step-by-Step Guide
+
+### Step 1 — Build the image
+
+```bash
+make build
+```
+
+Builds an Ubuntu 22.04 image with `kubectl`, `kind`, `helm`, Docker CLI, and networking tools pre-installed. Cached after the first run — only rebuilds when the Dockerfile changes.
+
+```bash
+make rebuild   # force a fresh build with no cache
+```
+
+---
+
+### Step 2 — Start everything
+
+```bash
+make up
+```
+
+This single command (fully automatic, no Ctrl+C needed):
+1. Cleans up any leftover kind containers from a previous run
+2. Starts the `k8s-lab` container via `docker compose up -d`
+3. Bootstraps a 3-node kind cluster (1 control-plane + 2 workers)
+4. Polls until all nodes are `Ready` and CoreDNS is running
+5. Applies all manifests in `manifests/` + installs Kubernetes Dashboard v2.7.0
+6. Waits for all deployments to roll out
+7. Patches dashboard to enable skip-login
+8. Starts port-forwards as background Mac processes
+9. Prints the static dashboard token
+
+Expected final output:
+```
+  ✓ Cluster is up and running!
+  ✓ hello-api  → http://localhost:30081
+  ✓ nginx      → http://localhost:30080
+  ✓ dashboard  → https://localhost:8443  (click 'Skip' to bypass login)
+
+  Dashboard token (static, no expiry):
+  eyJhbGci...
+```
+
+---
+
+### Step 3 — Test
+
+```bash
+curl http://localhost:30081   # Hello from Kubernetes! 🚀
+curl http://localhost:30080   # nginx welcome page
+```
+
+Open **https://localhost:8443** in your browser → accept the cert warning → click **Skip** to enter the dashboard without a token.
+
+To log in with full admin access, paste the token printed by `make up` / `make deploy`.
+
+---
+
+### Step 4 — Shell in (optional)
+
+```bash
+make shell
+```
+
+Drops you into an interactive bash shell inside the `k8s-lab` container with `kubectl`, `helm`, `kind`, and all network tools on `$PATH`.
+
+```bash
+# Inside the shell
+kubectl get nodes -o wide
+kubectl get po -A
+k get svc          # shorthand alias pre-configured
+helm list -A
+```
+
+---
+
+### Step 5 — Shut down
+
+```bash
+make down
+```
+
+Stops all port-forwards, removes the `k8s-lab` container, all kind node containers, and the kind Docker network. The built image is preserved so `make up` is fast next time.
+
+```bash
+make clean   # also deletes the kubeconfig volume (full reset)
+```
+
+---
+
+### Option B — docker compose (manual)
+
+If you prefer raw docker commands without `make`:
+
+**Start:**
 ```bash
 docker compose build
-```
-
-> Add `--no-cache` for a fully fresh build.
-
-#### 2. Clean up any prior kind containers (important on restart)
-
-```bash
 docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null
 docker network rm kind 2>/dev/null
-```
-
-#### 3. Start the cluster
-
-```bash
 docker compose up -d
+docker logs -f k8s-lab   # watch bootstrap, Ctrl+C when done
 ```
 
-#### 4. Tail startup logs
-
+**Deploy:**
 ```bash
-docker logs -f k8s-lab
+docker exec k8s-lab kubectl apply -f /workspace/manifests/
+docker exec k8s-lab kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml
 ```
 
-Wait for this output before proceeding (~60-90s on first run, ~30s after):
-```
-✓ Starting control-plane
-✓ Installing CNI
-✓ Joining worker nodes
-✓ Waiting for control-plane = Ready — Ready after 12s
-========================================
-  Kubernetes cluster is ready!
-========================================
+**Port-forwards (background Mac processes):**
+```bash
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443 &>/dev/null &
 ```
 
-#### 5. Attach a shell to the container
-
+**Shell:**
 ```bash
 docker exec -it k8s-lab bash
 ```
 
-You're now inside an Ubuntu shell with `kubectl` and `kind` on `$PATH`, pointed at your live cluster.
-
-#### 6. Verify the cluster
-
+**Shutdown:**
 ```bash
-# From inside the container
-kubectl get nodes -o wide
-kubectl get po -A
-```
-
-Expected output:
-```
-NAME                    STATUS   ROLES           AGE   VERSION
-k8s-lab-control-plane   Ready    control-plane   60s   v1.35.0
-k8s-lab-worker          Ready    <none>          50s   v1.35.0
-k8s-lab-worker2         Ready    <none>          50s   v1.35.0
-```
-
-#### 7. Stop the cluster
-
-```bash
-docker compose down
-
-# Also remove the kind node containers and network
-docker rm -f k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null
-docker network rm kind 2>/dev/null
-```
-
----
-
-### Option C — Run kubectl from your Mac (no shell needed)
-
-You don't need to shell into the container for every command:
-
-```bash
-# One-off commands
-docker exec k8s-lab kubectl get nodes
-docker exec k8s-lab kubectl get po -A
-docker exec k8s-lab kubectl apply -f /workspace/manifests/example.yaml
-
-# Open an interactive kubectl session on the host
-docker exec -it k8s-lab kubectl exec -it <pod-name> -- sh
+pkill -f "kubectl port-forward"
+docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2
+docker network rm kind
+docker compose down --remove-orphans
 ```
 
 ---
 
 ## Using kubectl
 
-All commands run **inside the container** shell (`docker exec -it k8s-lab bash`).
-
+**From your Mac** — no shell needed:
 ```bash
-# Cluster info
+make k CMD="cluster-info"
+make k CMD="get nodes -o wide"
+make k CMD="get po -A"
+make k CMD="get svc"
+```
+
+**From inside the container** (`make shell`):
+```bash
 kubectl cluster-info
 kubectl get nodes -o wide
-kubectl get po -A                        # all pods across all namespaces
+kubectl get po -A
+kubectl get svc
 
-# Shorthand alias (pre-configured)
+# Shorthand alias pre-configured
 k get nodes
 k get po -A
 ```
 
 ---
 
-## Deploying Applications
+## Included Manifests
 
-### Deploy an nginx web server
+| File | What it deploys |
+|---|---|
+| [`manifests/hello-api.yaml`](manifests/hello-api.yaml) | Hello World API (2 replicas) → http://localhost:30081 |
+| [`manifests/ngnix.yaml`](manifests/ngnix.yaml) | nginx web server (2 replicas) → http://localhost:30080 |
+| [`manifests/dashboard-admin.yaml`](manifests/dashboard-admin.yaml) | Dashboard admin ServiceAccount + token |
 
-```bash
-# Create a deployment
-kubectl create deployment nginx --image=nginx
+Drop any additional YAML into `./manifests/` on your Mac — it's live-mounted at `/workspace/manifests` inside the container.
 
-# Expose it as a NodePort service
-kubectl expose deployment nginx --port=80 --type=NodePort
+---
 
-# Check it's running
-kubectl get po
-kubectl get svc nginx
+## Deploy & Test: Hello API
 
-# Get the NodePort assigned (30000-32767)
-kubectl get svc nginx -o jsonpath='{.spec.ports[0].nodePort}'
-```
-
-### Apply a manifest from the manifests/ folder
-
-Put any YAML file in `./manifests/` on your Mac — it's live-mounted at `/workspace/manifests` inside the container.
+Manifest: [`manifests/hello-api.yaml`](manifests/hello-api.yaml) — 2 replicas of `hashicorp/http-echo` returning `Hello from Kubernetes! 🚀`.
 
 ```bash
-kubectl apply -f /workspace/manifests/my-deployment.yaml
-kubectl get all
+# Deploy
+make k CMD="apply -f /workspace/manifests/hello-api.yaml"
+
+# Watch pods come up
+make k CMD="get pods -l app=hello-api -w"
+
+# Test from your Mac (after make forward)
+curl http://localhost:30081
+# Hello from Kubernetes! 🚀
+
+# Test inside the cluster (ClusterIP, no port-forward needed)
+make k CMD="run curl-test --image=curlimages/curl --rm -it --restart=Never -- curl -s http://hello-api:80"
+
+# Rollout status
+make k CMD="rollout status deployment/hello-api"
+
+# Logs
+make k CMD="logs -l app=hello-api -f"
+
+# Scale
+make k CMD="scale deployment hello-api --replicas=4"
+
+# Teardown
+make k CMD="delete -f /workspace/manifests/hello-api.yaml"
 ```
 
 ---
 
-## Deploy & Test nginx
+## Deploy & Test: nginx
 
-A ready-to-use nginx manifest is included at [`manifests/ngnix.yaml`](manifests/ngnix.yaml) (2 replicas, NodePort 30080).
-
-### 1. Shell into the container
+Manifest: [`manifests/ngnix.yaml`](manifests/ngnix.yaml) — 2 replicas, NodePort 30080.
 
 ```bash
-make shell
-# or
-docker exec -it k8s-lab bash
-```
+# Deploy
+make k CMD="apply -f /workspace/manifests/ngnix.yaml"
 
-### 2. Apply the manifest
+# Watch pods
+make k CMD="get pods -l app=nginx -w"
 
-```bash
-kubectl apply -f /workspace/manifests/ngnix.yaml
-```
+# Test from your Mac (after make forward)
+curl http://localhost:30080
 
-### 3. Wait for pods to be Running
+# Test inside the cluster
+make k CMD="run curl-test --image=curlimages/curl --rm -it --restart=Never -- curl -s http://nginx:80"
 
-```bash
-kubectl get pods -l app=nginx -w
-# Press Ctrl+C once STATUS shows Running for both pods
-```
+# Logs
+make k CMD="logs -l app=nginx"
 
-Expected:
-```
-NAME                     READY   STATUS    RESTARTS   AGE
-nginx-xxxx-aaaaa         1/1     Running   0          15s
-nginx-xxxx-bbbbb         1/1     Running   0          15s
-```
-
-### 4. Verify the Service
-
-```bash
-kubectl get svc nginx
-```
-
-Expected:
-```
-NAME    TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
-nginx   NodePort   10.96.x.x      <none>        80:30080/TCP   20s
-```
-
-### 5a. Test via ClusterIP (inside the container)
-
-```bash
-# Spin up a temporary curl pod and hit the nginx service by DNS name
-kubectl run curl-test --image=curlimages/curl --rm -it --restart=Never \
-  -- curl -s http://nginx:80
-```
-
-You should see the nginx welcome HTML.
-
-### 5b. Test via port-forward (from your Mac)
-
-```bash
-# Run inside the container (or in a second terminal via docker exec)
-kubectl port-forward svc/nginx 8080:80
-```
-
-Then open **http://localhost:8080** in your Mac browser — you'll see the **"Welcome to nginx!"** page.
-
-### 6. Check nginx logs
-
-```bash
-kubectl logs -l app=nginx
-```
-
-### 7. Describe a pod (debugging)
-
-```bash
-kubectl describe pod -l app=nginx
-```
-
-### 8. Teardown
-
-```bash
-kubectl delete -f /workspace/manifests/ngnix.yaml
-# or from your Mac:
+# Teardown
 make k CMD="delete -f /workspace/manifests/ngnix.yaml"
 ```
 
-### Example deployment manifest
-
-```yaml
-# manifests/example.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: hello
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: hello
-  template:
-    metadata:
-      labels:
-        app: hello
-    spec:
-      containers:
-        - name: hello
-          image: nginxdemos/hello
-          ports:
-            - containerPort: 80
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: hello
-spec:
-  type: NodePort
-  selector:
-    app: hello
-  ports:
-    - port: 80
-      targetPort: 80
-      nodePort: 30080
-```
+
+## Kubernetes Dashboard
+
+A full web UI for your cluster — Kubernetes Dashboard v2.7.0.
+
+![Kubernetes Dashboard](assets/dashboard.png)
+*Workload status showing Deployments, Pods, and Replica Sets all running.*
+
+> **`make up` handles everything automatically** — installs the dashboard, patches it for skip-login, starts the port-forward, and prints the static token.
+
+### Access
+
+Open **https://localhost:8443** in your browser.
+
+- Accept the self-signed certificate warning (**Advanced → Proceed**)
+- Click **Skip** to enter without a token (read-only safe)
+- Or paste the static token (printed by `make up` / `make deploy`) for full admin access
+
+### Get the static token any time
 
 ```bash
-kubectl apply -f /workspace/manifests/example.yaml
-kubectl get po -l app=hello
-kubectl get svc hello
+make k CMD="get secret admin-user-token -n kubernetes-dashboard -o jsonpath='{.data.token}'" | base64 -d && echo
+```
+
+### Restart the port-forward if dashboard becomes unreachable
+
+```bash
+make forward
+```
+
+### Teardown dashboard only
+
+```bash
+make k CMD="delete -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.7.0/aio/deploy/recommended.yaml"
 ```
 
 ---
@@ -334,23 +373,22 @@ kubectl get svc hello
 
 ```bash
 # See pod IPs and which node they're on
-kubectl get po -A -o wide
+make k CMD="get po -A -o wide"
 
 # See service ClusterIPs and NodePorts
-kubectl get svc -A
+make k CMD="get svc -A"
 
 # Inspect the CNI (kindnet) networking on a node
-kubectl describe node k8s-lab-control-plane | grep -A5 "Addresses"
+make k CMD="describe node k8s-lab-control-plane"
 
-# Look at iptables rules (kube-proxy)
+# Look at iptables rules (kube-proxy) — runs directly on the kind node container
 docker exec k8s-lab-control-plane iptables -t nat -L KUBE-SERVICES --line-numbers | head -30
 
-# Trace a pod's network namespace
-kubectl get po -n kube-system -o wide   # find a pod
+# Routing table inside the kind control-plane node
 docker exec k8s-lab-control-plane ip route
 
 # DNS resolution inside the cluster
-kubectl run dnstest --image=busybox --rm -it --restart=Never -- nslookup kubernetes.default
+make k CMD="run dnstest --image=busybox --rm -it --restart=Never -- nslookup kubernetes.default"
 ```
 
 ---
@@ -359,7 +397,9 @@ kubectl run dnstest --image=busybox --rm -it --restart=Never -- nslookup kuberne
 
 ```bash
 # etcd — the cluster state store
-kubectl get po -n kube-system | grep etcd
+make k CMD="get po -n kube-system"
+make shell
+# then inside the container:
 kubectl exec -it etcd-k8s-lab-control-plane -n kube-system -- \
   etcdctl --endpoints=https://127.0.0.1:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
@@ -368,13 +408,13 @@ kubectl exec -it etcd-k8s-lab-control-plane -n kube-system -- \
   get / --prefix --keys-only | head -20
 
 # API server logs
-kubectl logs kube-apiserver-k8s-lab-control-plane -n kube-system | tail -20
+make k CMD="logs kube-apiserver-k8s-lab-control-plane -n kube-system --tail=20"
 
 # Scheduler logs
-kubectl logs kube-scheduler-k8s-lab-control-plane -n kube-system | tail -20
+make k CMD="logs kube-scheduler-k8s-lab-control-plane -n kube-system --tail=20"
 
 # Controller manager logs
-kubectl logs kube-controller-manager-k8s-lab-control-plane -n kube-system | tail -20
+make k CMD="logs kube-controller-manager-k8s-lab-control-plane -n kube-system --tail=20"
 ```
 
 ---
@@ -407,6 +447,7 @@ To swap the CNI (e.g. install Calico for learning network policy), set `disableD
 | Tool | Purpose |
 |---|---|
 | `kubectl` | Kubernetes CLI |
+| `helm` | Kubernetes package manager |
 | `kind` | Cluster lifecycle management |
 | `docker` (CLI) | Interact with host Docker daemon |
 | `tcpdump` | Capture network traffic |
@@ -426,7 +467,24 @@ docker logs k8s-lab
 ```
 Check for port conflicts or Docker socket permission issues.
 
-**`kubectl` connection refused**
+**Port-forwards dropped / services unreachable**
+
+Port-forwards run as background Mac processes (started by `make forward`). They die if the terminal session that started them is closed, or if the cluster restarts. Fix:
+```bash
+make forward
+```
+
+**Dashboard not accessible**
+```bash
+make forward   # restart all port-forwards
+# then open https://localhost:8443 and click Skip
+```
+If the dashboard was just deployed, wait 30s for the pod to be fully Running:
+```bash
+make k CMD="get pods -n kubernetes-dashboard -w"
+```
+
+**`kubectl` connection refused inside container**
 ```bash
 # Verify the container is on the kind network
 docker network inspect kind | grep k8s-lab
@@ -434,7 +492,7 @@ docker network inspect kind | grep k8s-lab
 # If missing, connect it
 docker network connect kind k8s-lab
 
-# Verify the kubeconfig has the right IP
+# Verify the kubeconfig has the right IP (not 127.0.0.1)
 cat /root/.kube/config | grep server
 ```
 
@@ -443,13 +501,19 @@ cat /root/.kube/config | grep server
 # Find what's using the port
 lsof -i :6443
 
-# Or remove all kind containers and try again
-docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2
-docker network rm kind
+# Clean up and try again
+make down && make up
 ```
 
 **Node NotReady**
 ```bash
-kubectl describe node <node-name>
-kubectl get events -A --sort-by=.lastTimestamp | tail -20
+make k CMD="describe node <node-name>"
+make k CMD="get events -A --sort-by=.lastTimestamp"
+```
+
+**Port-forwards silently not working**
+
+All port-forwards run as background Mac processes via `make forward` (using `docker exec ... &`). They bind to `0.0.0.0` inside the container so traffic flows: `Mac:port → Docker port mapping → container port-forward → pod`. If you start them manually, always use `--address 0.0.0.0`:
+```bash
+docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
 ```

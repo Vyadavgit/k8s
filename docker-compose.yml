@@ -19,6 +19,12 @@ services:
     ports:
       # Kubernetes API server
       - "6443:6443"
+      # Kubernetes Dashboard (port-forward target)
+      - "8443:8443"
+      # Hello API NodePort
+      - "30081:30081"
+      # nginx NodePort
+      - "30080:30080"
     # Keep stdout/stderr streaming so 'docker compose logs -f' works
     tty: false
     stdin_open: false

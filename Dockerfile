@@ -42,11 +42,15 @@ RUN ARCH=$(dpkg --print-architecture) \
     && curl -Lo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-${ARCH}" \
     && chmod +x /usr/local/bin/kind
 
+# Install Helm
+RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
 # Shell aliases and completion
 RUN echo 'alias k=kubectl' >> /root/.bashrc \
     && echo 'source <(kubectl completion bash)' >> /root/.bashrc \
     && echo 'complete -F __start_kubectl k' >> /root/.bashrc \
-    && echo 'source <(kind completion bash)' >> /root/.bashrc
+    && echo 'source <(kind completion bash)' >> /root/.bashrc \
+    && echo 'source <(helm completion bash)' >> /root/.bashrc
 
 RUN mkdir -p /root/.kube
 

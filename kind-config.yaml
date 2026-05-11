@@ -13,6 +13,14 @@ nodes:
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
+    # Map NodePorts through to the host so Mac can reach them directly
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 30080
+        protocol: TCP
+      - containerPort: 30081
+        hostPort: 30081
+        protocol: TCP
 
   # Worker nodes - add more to study multi-node networking
   - role: worker
