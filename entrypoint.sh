@@ -9,6 +9,23 @@ until docker info > /dev/null 2>&1; do
 done
 echo "==> Docker socket OK."
 
+# Detect host cgroup version and set the matching kubelet cgroup driver.
+# - cgroup v2 (macOS Docker Desktop, modern Linux) → systemd
+# - cgroup v1 (WSL2/Windows Docker Desktop, older Linux) → cgroupfs
+echo "==> Detecting cgroup version..."
+CGROUP_DRIVER="systemd"
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    CGROUP_DRIVER="systemd"
+    echo "    cgroup v2 detected → using systemd driver"
+else
+    CGROUP_DRIVER="cgroupfs"
+    echo "    cgroup v1 detected → using cgroupfs driver"
+fi
+
+# Patch the KubeletConfiguration in kind-config.yaml with the detected driver
+cp /kind-config.yaml /tmp/kind-config.yaml
+sed -i "s|failSwapOn: false|cgroupDriver: ${CGROUP_DRIVER}\n        failSwapOn: false|" /tmp/kind-config.yaml
+
 # Delete any pre-existing kind cluster
 kind delete cluster --name k8s-lab 2>/dev/null || true
 docker network rm kind 2>/dev/null || true
@@ -16,7 +33,7 @@ docker network rm kind 2>/dev/null || true
 echo "==> Creating Kubernetes cluster with kind..."
 kind create cluster \
     --name k8s-lab \
-    --config /kind-config.yaml \
+    --config /tmp/kind-config.yaml \
     --wait 5m
 
 # Connect THIS container to the kind network so kubectl can reach the API server
@@ -57,34 +74,6 @@ echo "  kubectl get nodes"
 echo "  kubectl get po -A"
 echo "  kubectl get svc -A"
 echo "  kubectl describe node k8s-lab-control-plane"
-echo "========================================"
-echo ""
-
-exec tail -f /dev/null
-
-echo ""
-echo "==> Cluster nodes:"
-kubectl get nodes -o wide
-
-echo ""
-echo "==> All pods (some may still be initializing - this is normal):"
-kubectl get po -A
-
-echo ""
-echo "========================================"
-echo "  Kubernetes cluster is ready!"
-echo ""
-echo "  kubectl get nodes"
-echo "  kubectl get po -A"
-echo "  kubectl get svc -A"
-echo "========================================"
-echo ""
-
-exec tail -f /dev/null"
-echo "  Minikube is ready!"
-echo "  kubectl get po -A"
-echo "  kubectl get nodes"
-echo "  minikube dashboard"
 echo "========================================"
 echo ""
 
