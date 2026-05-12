@@ -1,4 +1,4 @@
-.PHONY: build rebuild up down clean shell k logs deploy forward forward-stop dashboard
+.PHONY: build rebuild up down clean shell k logs deploy dashboard
 
 # ──────────────────────────────────────────────
 # Image
@@ -16,17 +16,17 @@ rebuild:
 # Cluster lifecycle
 # ──────────────────────────────────────────────
 
-## Start cluster + deploy all manifests + start port-forwards
+## Start cluster + deploy all manifests
 up:
 	@echo ""
-	@echo "==> [1/5] Cleaning up any prior kind containers..."
+	@echo "==> [1/4] Cleaning up any prior kind containers..."
 	@docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null || true
 	@docker network rm kind 2>/dev/null || true
 	@echo ""
-	@echo "==> [2/5] Starting k8s-lab container..."
+	@echo "==> [2/4] Starting k8s-lab container..."
 	@docker compose up -d
 	@echo ""
-	@echo "==> [3/5] Waiting for cluster to be ready..."
+	@echo "==> [3/4] Waiting for cluster to be ready..."
 	@until docker exec k8s-lab kubectl get nodes 2>/dev/null | grep -q "Ready"; do \
 		echo "    ... waiting for nodes"; sleep 5; \
 	done
@@ -36,14 +36,11 @@ up:
 	done
 	@echo "    ✓ CoreDNS ready"
 	@echo ""
-	@echo "==> [4/5] Deploying workload manifests..."
+	@echo "==> [4/4] Deploying workload manifests..."
 	@docker exec k8s-lab kubectl apply -f /workspace/manifests/
 	@echo "==> Waiting for rollouts..."
 	@docker exec k8s-lab kubectl rollout status deployment/hello-api --timeout=90s 2>/dev/null || true
 	@docker exec k8s-lab kubectl rollout status deployment/nginx --timeout=90s 2>/dev/null || true
-	@echo ""
-	@echo "==> [5/5] Starting port-forwards for workloads..."
-	@$(MAKE) --no-print-directory forward
 	@echo ""
 	@echo "  ✓ Cluster is up and running!"
 	@echo "  ✓ hello-api  → http://localhost:30081"
@@ -52,10 +49,10 @@ up:
 	@echo "  Run 'make dashboard' to install and open the Kubernetes Dashboard."
 	@echo ""
 
-## Stop port-forwards, remove all containers and networks (full shutdown)
+## Stop dashboard port-forward, remove all containers and networks (full shutdown)
 down:
 	@echo ""
-	@echo "==> Stopping port-forwards..."
+	@echo "==> Stopping dashboard port-forward..."
 	@pkill -f "kubectl port-forward" 2>/dev/null || true
 	@echo "==> Removing containers..."
 	@docker rm -f k8s-lab k8s-lab-control-plane k8s-lab-worker k8s-lab-worker2 2>/dev/null || true
@@ -79,7 +76,7 @@ clean: down
 shell:
 	docker exec -it k8s-lab bash
 
-## Run a kubectl command from your Mac
+## Run a kubectl command from the host
 ## Usage: make k CMD="get nodes -o wide"
 k:
 	@test -n "$(CMD)" || (echo "Usage: make k CMD=\"get nodes -o wide\"" && exit 1)
@@ -103,29 +100,6 @@ deploy:
 	@echo "  nginx      → http://localhost:30080"
 	@echo ""
 	@echo "  Run 'make dashboard' to install/refresh the Kubernetes Dashboard."
-
-# ──────────────────────────────────────────────
-# Port-forwarding
-# ──────────────────────────────────────────────
-
-## Start workload port-forwards in background (Mac processes, accessible at localhost)
-forward:
-	@echo "==> Killing any existing port-forwards..."
-	@pkill -f "kubectl port-forward" 2>/dev/null || true
-	@sleep 1
-	@echo "==> Starting port-forwards..."
-	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
-	@docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
-	@sleep 2
-	@echo ""
-	@echo "  ✓ hello-api  → http://localhost:30081"
-	@echo "  ✓ nginx      → http://localhost:30080"
-	@echo "  Run 'make dashboard' to install and open the Kubernetes Dashboard."
-
-## Stop all port-forwards
-forward-stop:
-	@pkill -f "kubectl port-forward" 2>/dev/null || true
-	@echo "  ✓ All port-forwards stopped."
 
 # ──────────────────────────────────────────────
 # Dashboard  (run after 'make up' when cluster is fully ready)

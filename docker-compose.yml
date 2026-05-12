@@ -12,19 +12,17 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Persist kubeconfig so kubectl works from host too
       - kube-config:/root/.kube
-      # Drop YAML manifests here on your Mac, access at /workspace/manifests inside
+      # Drop YAML manifests here on your host, access at /workspace/manifests inside
       - ./manifests:/workspace/manifests
     environment:
       - KUBECONFIG=/root/.kube/config
     ports:
       # Kubernetes API server
       - "6443:6443"
-      # Kubernetes Dashboard (port-forward target)
+      # Kubernetes Dashboard (kubectl port-forward target)
       - "8443:8443"
-      # Hello API NodePort
-      - "30081:30081"
-      # nginx NodePort
-      - "30080:30080"
+      # NodePorts 30080/30081 are bound directly by the kind control-plane
+      # sibling container via extraPortMappings in kind-config.yaml.
     # Keep stdout/stderr streaming so 'docker compose logs -f' works
     tty: false
     stdin_open: false

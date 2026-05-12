@@ -13,7 +13,16 @@ nodes:
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true"
-    # Map NodePorts through to the host so Mac can reach them directly
+      # Disable swap check — safe on all platforms, required on WSL2 where
+      # swap is enabled by default.
+      # NOTE: cgroupDriver is NOT set here; entrypoint.sh detects the host
+      # cgroup version and patches this config automatically.
+      - |
+        kind: KubeletConfiguration
+        failSwapOn: false
+    # NodePort bindings: kind publishes these directly from the control-plane
+    # sibling container to the host. Works on macOS and Windows without any
+    # kubectl port-forward processes needed for workload services.
     extraPortMappings:
       - containerPort: 30080
         hostPort: 30080

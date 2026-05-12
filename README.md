@@ -1,12 +1,12 @@
 # Local Kubernetes Lab (kind + Docker)
 
-A containerized Kubernetes environment running a 3-node cluster (1 control-plane + 2 workers) using [kind](https://kind.sigs.k8s.io/) inside Docker. Purpose-built for exploring Kubernetes networking, deployments, services, and internals on macOS.
+A containerized Kubernetes environment running a 3-node cluster (1 control-plane + 2 workers) using [kind](https://kind.sigs.k8s.io/) inside Docker. Purpose-built for exploring Kubernetes networking, deployments, services, and internals — works on macOS and Windows.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  macOS Host                                     │
+│  Host (macOS / Windows / Linux)                 │
 │                                                 │
 │  ┌────────────────────────────────────────────┐ │
 │  │  k8s-lab container (Ubuntu 22.04)          │ │
@@ -26,7 +26,7 @@ A containerized Kubernetes environment running a 3-node cluster (1 control-plane
 
 ## Prerequisites
 
-- [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) (>= 4.x)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (>= 4.x) — macOS or Windows
 - Docker Desktop resource settings: **≥ 4 GB RAM**, **≥ 2 CPUs**
 
 ## Project Structure
@@ -52,14 +52,14 @@ k8s/
 
 ```bash
 make build      # 1. Build the Docker image (once)
-make up         # 2. Start cluster + deploy workloads + start port-forwards
+make up         # 2. Start cluster + deploy workloads (NodePorts bound automatically)
 make dashboard  # 3. Install dashboard once cluster is fully ready
 ```
 
 `make up` automatically:
 - Bootstraps the 3-node kind cluster
 - Deploys nginx and Hello API
-- Starts port-forwards as background Mac processes
+- NodePorts 30080/30081 are bound directly by the kind control-plane container — no port-forward processes needed
 
 `make dashboard` (run separately after `make up` completes):
 - Installs Kubernetes Dashboard v2.7.0
@@ -92,19 +92,17 @@ make down
 |---|---|
 | `make build` | Build the Docker image |
 | `make rebuild` | Force rebuild with no cache |
-| `make up` | Start cluster + deploy workload manifests + start port-forwards |
+| `make up` | Start cluster + deploy workload manifests |
 | `make dashboard` | Install dashboard, wait until ready, enable skip-login, start port-forward |
-| `make down` | Stop port-forwards + remove all containers + clean up |
+| `make down` | Stop dashboard port-forward + remove all containers + clean up |
 | `make clean` | `down` + delete kubeconfig volume (full reset) |
 | `make shell` | Attach interactive bash shell to the container |
-| `make forward` | (Re)start workload port-forwards (hello-api + nginx) in background |
-| `make forward-stop` | Stop all port-forwards |
 | `make deploy` | Re-apply workload manifests (cluster must be running) |
 | `make logs` | Tail container logs |
-| `make k CMD="..."` | Run any kubectl command from your Mac |
+| `make k CMD="..."` | Run any kubectl command from the host |
 
 ```bash
-# kubectl one-liners from your Mac
+# kubectl one-liners from your host
 make k CMD="get nodes -o wide"
 make k CMD="get po -A"
 make k CMD="get svc"
@@ -142,7 +140,8 @@ This single command (fully automatic, no Ctrl+C needed):
 3. Bootstraps a 3-node kind cluster (1 control-plane + 2 workers)
 4. Polls until all nodes are `Ready` and CoreDNS is running
 5. Applies workload manifests (`hello-api`, `nginx`) and waits for rollouts
-6. Starts port-forwards as background Mac processes
+
+NodePorts 30080 and 30081 are bound directly by the kind control-plane container via `extraPortMappings` — no background port-forward processes are needed.
 
 Expected final output:
 ```
@@ -192,7 +191,7 @@ curl http://localhost:30080   # nginx welcome page
 
 Open **https://localhost:8443** in your browser → accept the cert warning → click **Skip** to enter the dashboard without a token.
 
-To log in with full admin access, paste the token printed by `make up` / `make deploy`.
+To log in with full admin access, paste the token printed by `make dashboard`.
 
 ---
 
@@ -220,7 +219,7 @@ helm list -A
 make down
 ```
 
-Stops all port-forwards, removes the `k8s-lab` container, all kind node containers, and the kind Docker network. The built image is preserved so `make up` is fast next time.
+Stops the dashboard port-forward, removes the `k8s-lab` container, all kind node containers, and the kind Docker network. The built image is preserved so `make up` is fast next time.
 
 ```bash
 make clean   # also deletes the kubeconfig volume (full reset)
@@ -246,10 +245,10 @@ docker logs -f k8s-lab   # watch bootstrap, Ctrl+C when done
 docker exec k8s-lab kubectl apply -f /workspace/manifests/
 ```
 
-**Workload port-forwards (background Mac processes):**
+**Workload port-forwards (not needed — NodePorts are bound directly by kind):**
 ```bash
-docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
-docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/nginx 30080:80 &>/dev/null &
+# hello-api and nginx are accessible at localhost:30081 and localhost:30080
+# once the cluster is up and manifests are applied.
 ```
 
 **Dashboard (after workloads are running):**
@@ -279,7 +278,7 @@ docker compose down --remove-orphans
 
 ## Using kubectl
 
-**From your Mac** — no shell needed:
+**From your host** — no shell needed:
 ```bash
 make k CMD="cluster-info"
 make k CMD="get nodes -o wide"
@@ -309,7 +308,7 @@ k get po -A
 | [`manifests/ngnix.yaml`](manifests/ngnix.yaml) | nginx web server (2 replicas) → http://localhost:30080 |
 | [`manifests/dashboard-admin.yaml`](manifests/dashboard-admin.yaml) | Dashboard admin ServiceAccount + token |
 
-Drop any additional YAML into `./manifests/` on your Mac — it's live-mounted at `/workspace/manifests` inside the container.
+Drop any additional YAML into `./manifests/` on your host — it's live-mounted at `/workspace/manifests` inside the container.
 
 ---
 
@@ -324,7 +323,7 @@ make k CMD="apply -f /workspace/manifests/hello-api.yaml"
 # Watch pods come up
 make k CMD="get pods -l app=hello-api -w"
 
-# Test from your Mac (after make forward)
+# Test from your host (no port-forward needed)
 curl http://localhost:30081
 # Hello from Kubernetes! 🚀
 
@@ -357,7 +356,7 @@ make k CMD="apply -f /workspace/manifests/ngnix.yaml"
 # Watch pods
 make k CMD="get pods -l app=nginx -w"
 
-# Test from your Mac (after make forward)
+# Test from your host (no port-forward needed)
 curl http://localhost:30080
 
 # Test inside the cluster
@@ -519,11 +518,11 @@ docker logs k8s-lab
 ```
 Check for port conflicts or Docker socket permission issues.
 
-**Port-forwards dropped / services unreachable**
+**Workload services unreachable (30080/30081)**
 
-Port-forwards run as background Mac processes (started by `make forward`). They die if the terminal session that started them is closed, or if the cluster restarts. Fix:
+NodePorts 30080/30081 are bound directly by the kind control-plane container via `extraPortMappings`. If they stop working, the cluster itself is down. Fix:
 ```bash
-make forward
+make down && make up
 ```
 
 **Dashboard not accessible**
@@ -559,8 +558,10 @@ cat /root/.kube/config | grep server
 
 **Port already allocated on start**
 ```bash
-# Find what's using the port
+# Find what's using the port (macOS/Linux)
 lsof -i :6443
+# or on Windows (PowerShell)
+Get-NetTCPConnection -LocalPort 6443
 
 # Clean up and try again
 make down && make up
@@ -572,9 +573,9 @@ make k CMD="describe node <node-name>"
 make k CMD="get events -A --sort-by=.lastTimestamp"
 ```
 
-**Port-forwards silently not working**
+**Dashboard port-forward silently not working**
 
-All port-forwards run as background Mac processes via `make forward` (using `docker exec ... &`). They bind to `0.0.0.0` inside the container so traffic flows: `Mac:port → Docker port mapping → container port-forward → pod`. If you start them manually, always use `--address 0.0.0.0`:
+The dashboard port-forward runs as a background process inside `k8s-lab` (started by `make dashboard`). If it stops working, restart it:
 ```bash
-docker exec k8s-lab kubectl port-forward --address 0.0.0.0 svc/hello-api 30081:80 &>/dev/null &
+make dashboard   # safe to re-run, idempotent
 ```
